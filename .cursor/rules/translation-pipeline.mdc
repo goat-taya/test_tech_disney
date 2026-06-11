@@ -1,0 +1,17 @@
+---
+description: Translation pipeline assignment guardrails
+globs:
+  - "src/**/*.py"
+  - "tests/**/*.py"
+alwaysApply: true
+---
+
+# Translation Pipeline Rules
+
+- Use the mock `translate()` function only; do not call external LLM or translation APIs.
+- Route document translation through `TranslationService`.
+- Keep Excel, Word, and PDF parsing/writing logic in their format-specific modules.
+- Prefer focused tests before behavior changes.
+- Preserve supported document structure: Excel columns, Word bullets/tables/basic run formatting, and regenerated PDF text.
+- Keep Lambda and worker code local-only. Do not require cloud credentials or deploy anything.
+- Put scalability behavior in the service or worker layer: batching, caching, retries, throttling, and resumable jobs.
