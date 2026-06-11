@@ -1,0 +1,6 @@
+{
+  "storage": "local",
+  "input_path": "input/products.xlsx",
+  "output_dir": "output",
+  "job_dir": "jobs"
+}
