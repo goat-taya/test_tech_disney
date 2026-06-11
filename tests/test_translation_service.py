@@ -45,3 +45,35 @@ def test_translation_service_reuses_cache_across_calls():
     assert service.translate_text("Texte A") == "[EN] Texte A"
 
     assert calls == ["Texte A"]
+
+
+def test_translation_service_retries_transient_backend_errors():
+    calls = []
+
+    def backend(text, source="fr", target="en"):
+        calls.append(text)
+        if len(calls) == 1:
+            raise RuntimeError("temporary outage")
+        return f"[EN] {text}"
+
+    service = TranslationService(backend=backend, max_retries=1, retry_delay_seconds=0)
+
+    assert service.translate_text("Texte A") == "[EN] Texte A"
+    assert calls == ["Texte A", "Texte A"]
+
+
+def test_translation_service_throttles_between_uncached_batches():
+    sleeps = []
+
+    def backend(text, source="fr", target="en"):
+        return f"[EN] {text}"
+
+    service = TranslationService(
+        backend=backend,
+        batch_size=2,
+        throttle_seconds=0.25,
+        sleep=sleeps.append,
+    )
+
+    assert service.translate_many(["A", "B", "C"]) == ["[EN] A", "[EN] B", "[EN] C"]
+    assert sleeps == [0.25]

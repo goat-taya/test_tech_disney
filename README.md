@@ -1,6 +1,6 @@
 # AI Document Translation Pipeline
 
-Small Python pipeline for extracting French business text from Excel, Word, and PDF files, passing it through the required mock translation service, and writing translated files back locally.
+Scalable local document translation pipeline for extracting French business text from Excel, Word, and PDF files, passing it through the required mock translation service, and writing translated files back through an asynchronous job model.
 
 ## Setup
 
@@ -17,15 +17,28 @@ Run the tests:
 pytest -q
 ```
 
-Run the pipeline on one file:
+Submit work through the scalable async path:
+
+```bash
+python - <<'PY'
+import json
+from translator.async_handler import handler
+
+event = json.load(open("events/sample_async_event.json"))
+print(handler(event, None))
+PY
+```
+
+Process queued jobs with the worker:
+
+```bash
+python -m translator.worker
+```
+
+The synchronous CLI still exists for local debugging and test fixtures:
 
 ```bash
 python -m translator.pipeline input/products.xlsx output
-```
-
-Run it on a directory:
-
-```bash
 python -m translator.pipeline input output
 ```
 
@@ -37,13 +50,13 @@ The code uses one dispatcher in `src/translator/pipeline.py` and keeps document 
 - `word.py`: uses `python-docx` to replace paragraph and table-cell text while preserving paragraph style and first-run formatting.
 - `pdf.py`: uses `pypdf` for extraction and `reportlab` to generate a translated PDF with basic formatting.
 - `mock_service.py`: contains the required mock translation function.
-- `service.py`: wraps the mock service with a scalable translation facade for batching, deduplication, and caching.
-- `async_handler.py`: accepts work asynchronously and returns a job id.
-- `jobs.py` and `worker.py`: provide a local file-backed job queue and worker loop for the take-home version.
+- `service.py`: wraps the mock service with batching, deduplication, caching, retry, and throttle hooks.
+- `async_handler.py`: accepts work asynchronously, returns a job id, and exposes job status.
+- `jobs.py` and `worker.py`: provide a local durable job store, attempt tracking, retry requeueing, and worker draining.
 
 The document handlers do not call the mock directly. They receive a `TranslationService`, which means large jobs can share one cache across Excel, Word, and PDF files during a directory run. This also creates a single place to add real API behavior later: rate limiting, retries, request batching, telemetry, and circuit breaking.
 
-The scalable path is asynchronous. A request should enqueue a translation job and return `202 Accepted`; workers then process jobs under shared rate limits. The synchronous CLI remains useful for local demos and tests, but it is not the production shape I would choose for large files.
+The scalable path is asynchronous. Requests enqueue translation jobs and return `202 Accepted`; workers then process jobs under service-layer batching, throttling, caching, and retry rules. The synchronous CLI remains useful for local demos and tests, but it is not the production delivery path.
 
 ## TDD And Tests
 
@@ -62,7 +75,11 @@ The current suite verifies:
 - The pipeline dispatches based on file extension.
 - The Lambda handler can process a local file event.
 - The async handler enqueues a job and the worker processes it later.
+- Job status can be queried through the async handler.
+- Retryable worker failures are requeued until `max_attempts` is exhausted.
+- Workers can drain multiple queued jobs in one run.
 - Repeated translation strings are deduplicated and cached through `TranslationService`.
+- Translation backend calls can be retried and throttled between batches.
 - The integration suite processes Excel, Word, and PDF together through `translate_directory()`.
 
 ## Lambda Handler Bonus
@@ -91,13 +108,14 @@ PY
 
 In production, the local path handling would be replaced by an S3 storage adapter using `boto3`, while keeping `translate_file()` unchanged.
 
-## Async Worker Bonus
+## Async Worker Delivery Path
 
-For scalability, I would not process large documents synchronously inside the request handler. The async version is represented by:
+For scalability, large documents are not processed synchronously inside the request handler. The async version is represented by:
 
 - `src/translator/async_handler.py`: validates the event, creates a job, and returns immediately with `202 Accepted`.
-- `src/translator/jobs.py`: stores local JSON job records for this test. In production this would become SQS plus DynamoDB/Postgres job state.
-- `src/translator/worker.py`: claims queued jobs and runs the translation pipeline.
+- `src/translator/jobs.py`: stores local JSON job records with `queued`, `running`, `retry_scheduled`, `succeeded`, and `failed` states, plus attempt counts and errors.
+- `src/translator/worker.py`: claims queued jobs, processes available work, requeues retryable failures, and records terminal failures.
+- `src/translator/service.py`: centralizes deduplication, batching, retry, and throttle behavior around the translation backend.
 
 Local async submission:
 
@@ -111,10 +129,20 @@ print(handler(event, None))
 PY
 ```
 
-Process one queued job:
+Process queued jobs:
 
 ```bash
 python -m translator.worker
+```
+
+Status lookup:
+
+```bash
+python - <<'PY'
+from translator.async_handler import handler
+
+print(handler({"action": "status", "storage": "local", "job_id": "replace-with-job-id"}, None))
+PY
 ```
 
 Production shape:
@@ -126,13 +154,15 @@ flowchart TD
     B --> D[Enqueue translation job]
     B --> E[Return 202 with job id]
     D --> F[Worker pool]
-    F --> G[TranslationService batching/cache/rate limit]
+    F --> G[TranslationService batching/cache/retry/throttle]
     G --> H[Write translated file]
     H --> I[Mark job succeeded]
-    F --> J[Mark job failed with retry/error state]
+    F --> J[Schedule retryable failures]
+    J --> F
+    F --> K[Mark terminal failures]
 ```
 
-This lets the system scale by increasing worker count while still enforcing a global translation API budget. If latency is less important than scalability, the worker pool should prioritize durable progress, backpressure, and resumability over immediate completion.
+This lets the system scale by increasing worker count while still enforcing a global translation API budget. The local file-backed job store is intentionally replaceable; in production it should become SQS or another queue plus DynamoDB/Postgres for queryable job state. The important boundary is stable: request handlers enqueue, workers process, and `TranslationService` owns backend pressure.
 
 ## Power Automate Bonus
 
@@ -158,11 +188,11 @@ If the mock became a real translation API with rate limits and large Excel files
 
 - Batch translation units through `TranslationService.translate_many()` instead of calling the API per cell.
 - Deduplicate repeated strings before translation. This is already implemented for the local service facade.
-- Add request throttling, retries with exponential backoff, and timeout handling inside `TranslationService`.
+- Add distributed request throttling, exponential backoff, and timeout handling inside `TranslationService`.
 - Cache translations by source text, source language, target language, and model/API version. The in-memory cache already proves the interface; production would use Redis, DynamoDB, or a database table depending on deployment.
 - Stream or chunk large workbooks where possible.
 - Persist checkpoints so a failed 50,000-row job can resume.
-- Track job status, partial failures, and translated-row counts.
+- Track job status, attempts, partial failures, and translated-row counts. The local job store already records status and attempts.
 - Add structured logs and metrics for latency, API errors, and cost.
 
 For 50,000 rows, the pipeline should treat translation as a job rather than a single request/response call. A production version would enqueue work, process batches with controlled concurrency, update progress after each committed batch, and write partial results safely so the job can resume after a failure.
@@ -173,7 +203,7 @@ Rate limiting would live at the worker/service boundary:
 - `TranslationService` groups translation units into batches.
 - A shared rate limiter controls requests per minute across workers.
 - `429` responses honor `Retry-After` and requeue the batch instead of blocking the whole system.
-- Job state tracks `queued`, `running`, `succeeded`, `failed`, and eventually `retry_scheduled`.
+- Job state tracks `queued`, `running`, `retry_scheduled`, `succeeded`, and `failed`; a production queue would move delayed retries into the queue instead of local JSON timestamps.
 
 ## AI Configuration
 
@@ -197,4 +227,5 @@ These rules tell AI assistants to:
 - PDF layout is regenerated rather than preserved.
 - Word translation currently preserves paragraph style and first-run formatting, but does not preserve mixed formatting inside a sentence perfectly.
 - Excel assumes the source column is named `description`.
-- The Lambda handler is local-only and intentionally does not use AWS credentials.
+- The Lambda handlers are local-only and intentionally do not use AWS credentials.
+- The local job store uses JSON files, so it is useful for deterministic local testing but not safe for multiple distributed workers.

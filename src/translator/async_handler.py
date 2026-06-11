@@ -10,7 +10,19 @@ def handler(event, context):
         raise NotImplementedError("Only local storage is implemented for the take-home test")
 
     store = JobStore(event.get("job_dir", "jobs"))
-    job = store.enqueue(Path(event["input_path"]), Path(event.get("output_dir", "output")))
+    if event.get("action") == "status":
+        job = store.get(event["job_id"])
+        return {
+            "statusCode": 200,
+            "body": json.dumps(job),
+        }
+
+    job = store.enqueue(
+        Path(event["input_path"]),
+        Path(event.get("output_dir", "output")),
+        max_attempts=int(event.get("max_attempts", 1)),
+        retry_delay_seconds=float(event.get("retry_delay_seconds", 0)),
+    )
 
     return {
         "statusCode": 202,

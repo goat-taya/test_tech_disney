@@ -1,5 +1,5 @@
 ---
-description: Translation pipeline assignment guardrails
+description: Translation pipeline guardrails
 globs:
   - "src/**/*.py"
   - "tests/**/*.py"

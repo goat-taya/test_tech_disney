@@ -2,5 +2,7 @@
   "storage": "local",
   "input_path": "input/products.xlsx",
   "output_dir": "output",
-  "job_dir": "jobs"
+  "job_dir": "jobs",
+  "max_attempts": 3,
+  "retry_delay_seconds": 30
 }

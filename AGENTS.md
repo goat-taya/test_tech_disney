@@ -1,6 +1,6 @@
 # Codex Instructions
 
-This repository is a take-home document translation pipeline. Keep changes aligned with these rules:
+This repository is a document translation pipeline. Keep changes aligned with these rules:
 
 - Use the mock `translate()` function only. Do not call external LLM or translation APIs.
 - Follow TDD for behavior changes: add or update a focused test first, watch it fail, then implement the smallest production change that passes.

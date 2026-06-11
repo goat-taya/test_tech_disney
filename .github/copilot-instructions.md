@@ -1,6 +1,5 @@
 # Copilot Instructions
 
-This repository is a local take-home document translation pipeline.
 
 - Use only the required mock translation backend in `src/translator/mock_service.py`.
 - Do not introduce real translation, LLM, AWS, or cloud-provider calls.
